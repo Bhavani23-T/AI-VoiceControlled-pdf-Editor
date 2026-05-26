@@ -62,6 +62,13 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
   const [interimTranscript, setInterimTranscript] = useState("");
   const recognitionRef = useRef<SpeechRecognitionInstance | null>(null);
 
+  // ── KEY FIX: tracks whether the USER intentionally wants to be listening ──
+  // The Web Speech API fires onend after every "no-speech" silence timeout,
+  // even with continuous=true. Without this ref, the session dies silently
+  // while the UI still shows the mic as "active", making voice undetectable.
+  const shouldBeListeningRef = useRef(false);
+  const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const isSupported =
     typeof window !== "undefined" &&
     ("SpeechRecognition" in window || "webkitSpeechRecognition" in window);
@@ -72,7 +79,7 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
     const w = window as WindowWithSpeechRecognition;
     const SpeechRecognition = w.SpeechRecognition || w.webkitSpeechRecognition;
     const recognition = new SpeechRecognition();
-    recognition.continuous = true; // Use continuous to allow longer commands without auto-cutoff
+    recognition.continuous = true;
     recognition.interimResults = true;
 
     // Load preferred language from saved settings
@@ -107,22 +114,47 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
-      if (event.error === "aborted") return; // Ignore intentional aborts
+      // Intentional abort — ignore completely
+      if (event.error === "aborted") return;
 
+      // "no-speech" fires naturally during silence in continuous mode — not a real error.
+      // onend will handle the restart if shouldBeListeningRef is true.
+      if (event.error === "no-speech") return;
+
+      // Real errors (mic permission denied, hardware error, etc.)
       console.error("Speech recognition error:", event.error);
-      if (event.error !== "no-speech") {
-        setIsListening(false);
-      }
+      shouldBeListeningRef.current = false;
+      setIsListening(false);
     };
 
     recognition.onend = () => {
-      setIsListening(false);
       setInterimTranscript("");
+
+      // ── AUTO-RESTART: if the user still wants to be listening, restart ──
+      // The browser ends the session after silence (no-speech timeout), but
+      // since shouldBeListeningRef.current is still true, we restart silently.
+      if (shouldBeListeningRef.current) {
+        // Small delay so we don't hammer the browser with instant restarts
+        restartTimerRef.current = setTimeout(() => {
+          if (shouldBeListeningRef.current && recognitionRef.current) {
+            try {
+              recognitionRef.current.start();
+            } catch {
+              // If start fails (e.g. already running), ignore
+            }
+          }
+        }, 100);
+      } else {
+        // User intentionally stopped — update UI state
+        setIsListening(false);
+      }
     };
 
     recognitionRef.current = recognition;
 
     return () => {
+      shouldBeListeningRef.current = false;
+      if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
       recognition.abort();
     };
   }, [isSupported]);
@@ -130,36 +162,49 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
   const startListening = useCallback(() => {
     if (!recognitionRef.current) return;
 
+    // Mark intention BEFORE starting so onend can restart if needed
+    shouldBeListeningRef.current = true;
+
     try {
-      // Abort any existing session to clear stale mobile buffers
+      // Abort any existing session to clear stale buffers
       recognitionRef.current.abort();
 
       setTranscript("");
       setInterimTranscript("");
 
-      // Use a small timeout to let the browser process the abort
+      // Small timeout to let the browser process the abort before starting fresh
       setTimeout(() => {
+        if (!shouldBeListeningRef.current) return; // Guard against race
         try {
           recognitionRef.current?.start();
           setIsListening(true);
         } catch (e) {
           console.error("Delayed start error:", e);
+          shouldBeListeningRef.current = false;
+          setIsListening(false);
         }
-      }, 50);
+      }, 80);
     } catch (e) {
       console.error("Failed to reset/start recognition:", e);
+      shouldBeListeningRef.current = false;
     }
   }, []);
 
   const stopListening = useCallback(() => {
     if (!recognitionRef.current) return;
 
+    // Clear intention FIRST so onend does NOT auto-restart
+    shouldBeListeningRef.current = false;
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+
     try {
       recognitionRef.current.stop();
       setIsListening(false);
     } catch (e) {
       console.error("Failed to stop recognition:", e);
-      // Force state update regardless of error
       setIsListening(false);
     }
   }, []);

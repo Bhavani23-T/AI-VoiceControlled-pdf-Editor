@@ -59,7 +59,7 @@ const SmartSuggestions = ({
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "stepfun/step-3.5-flash:free",
+          model: "google/gemma-4-31b-it:free",
           max_tokens: 150, // suggestions are short — hard cap
           temperature: 0.4,
           messages: [

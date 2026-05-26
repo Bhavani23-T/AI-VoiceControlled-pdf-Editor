@@ -163,50 +163,25 @@ const Index = () => {
       localStorage.removeItem(STORAGE_KEY);
     }
 
-    // Supabase Persistence — fallback to select + update/insert manually
-    // since the database lacks a unique constraint for upsert to use onConflict.
+    // Supabase Persistence — use upsert with onConflict to avoid race conditions
+    // that caused "duplicate key value violates unique constraint" errors.
     if (user && paragraphs.length > 0) {
       const activeName = fileName || "unnamed_document";
       supabase
         .from("user_documents")
-        .select("id")
-        .eq("user_id", user.id)
-        .eq("file_hash", activeName)
-        .maybeSingle()
-        .then(({ data, error: selectError }) => {
-          if (selectError) {
-            console.error("Backup Fetch Failed:", selectError.message);
-            return;
-          }
-
-          if (data?.id) {
-            supabase
-              .from("user_documents")
-              .update({
-                content: paragraphs,
-                page_count: pageCount,
-                updated_at: new Date().toISOString(),
-              })
-              .eq("id", data.id)
-              .then(({ error }) => {
-                if (error)
-                  console.error("Backup Update Failed:", error.message);
-              });
-          } else {
-            supabase
-              .from("user_documents")
-              .insert({
-                user_id: user.id,
-                file_hash: activeName,
-                content: paragraphs,
-                page_count: pageCount,
-                updated_at: new Date().toISOString(),
-              })
-              .then(({ error }) => {
-                if (error)
-                  console.error("Backup Insert Failed:", error.message);
-              });
-          }
+        .upsert(
+          {
+            user_id: user.id,
+            file_hash: activeName,
+            content: paragraphs,
+            page_count: pageCount,
+            updated_at: new Date().toISOString(),
+          },
+          { onConflict: "user_id,file_hash" },
+        )
+        .then(({ error }) => {
+          if (error)
+            console.error("Backup Upsert Failed:", error.message, error.details);
         });
     }
   }, [fileName, paragraphs, pageCount, user]);
@@ -879,7 +854,7 @@ const Index = () => {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          model: "stepfun/step-3.5-flash:free",
+          model: "google/gemma-4-31b-it:free",
           max_tokens: 30, // a title is max 5 words — very small cap
           temperature: 0.3,
           messages: [

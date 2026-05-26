@@ -11,7 +11,84 @@ import {
 /**
  * AI Service — OpenRouter Direct Signal Protocol
  * Optimised: caching, deduplication, smart context windowing, prompt minification
+ *
+ * // ── Active model on OpenRouter ──────────────────────────────────────────────
+ * // Change this single constant to swap the AI model across the whole app.
  */
+// ── Fallback chain: tried in order until one succeeds ────────────────────────
+// If a model is rate-limited (429/502), the next one is automatically tried.
+const FREE_MODEL_CHAIN = [
+  "meta-llama/llama-4-scout:free",          // Fast, reliable — primary
+  "meta-llama/llama-3.1-8b-instruct:free",  // Lightweight fallback
+  "mistralai/mistral-7b-instruct:free",     // Very stable free model
+  "google/gemma-3-12b-it:free",             // Google fallback
+  "deepseek/deepseek-r1-distill-llama-70b:free", // High quality fallback
+  "qwen/qwen3-8b:free",                     // Alibaba fallback
+  "google/gemma-4-31b-it:free",             // Original (now last resort)
+];
+
+// ── Shared fetch helper with model fallback ───────────────────────────────────
+async function fetchWithFallback(
+  backendUrl: string,
+  token: string,
+  bodyTemplate: (model: string) => object,
+): Promise<Response> {
+  let lastErr: Error = new Error("All models exhausted.");
+
+  for (const model of FREE_MODEL_CHAIN) {
+    const body = bodyTemplate(model);
+    let response: Response;
+    try {
+      response = await fetch(`${backendUrl}/edit/chat`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+    } catch (networkErr) {
+      // True network error (backend down, CORS) — no point trying other models
+      throw networkErr;
+    }
+
+    // If rate-limited or model-not-found, move to the next model
+    if (response.status === 429 || response.status === 404) {
+      const raw = await response.text().catch(() => "");
+      console.warn(`Model "${model}" unavailable (HTTP ${response.status}). Trying next model...`, raw);
+      lastErr = new Error(`HTTP ${response.status}: ${raw}`);
+      continue;
+    }
+
+    // For 502/503 from backend (upstream model error), check if it's a model issue
+    if (response.status === 502 || response.status === 503) {
+      const raw = await response.text().catch(() => "");
+      const isModelError = raw.includes("No endpoints found") ||
+        raw.includes("rate-limited") ||
+        raw.includes("429");
+      if (isModelError) {
+        console.warn(`Model "${model}" returned upstream error (HTTP ${response.status}). Trying next model...`, raw);
+        lastErr = new Error(`HTTP ${response.status}: ${raw}`);
+        continue;
+      }
+      // Non-model 502 — surface immediately
+      console.error(`Backend error (HTTP ${response.status}):`, raw);
+      throw new Error(`API Connection failed (HTTP ${response.status}): ${raw}`);
+    }
+
+    // All other non-OK responses (401, 500, etc.) — surface immediately
+    if (!response.ok) {
+      const raw = await response.text().catch(() => "(unreadable)");
+      console.error(`API failed: HTTP ${response.status}`, raw);
+      throw new Error(`API Connection failed (HTTP ${response.status}): ${raw}`);
+    }
+
+    console.info(`Scribe Oracle: Connected via model "${model}".`);
+    return response; // ✅ success
+  }
+
+  throw lastErr; // all models failed
+}
 
 const SYSTEM_PROMPT = minifyPrompt(`
 You are the "Gilded Scribe", an AI voice editor assistant.
@@ -61,14 +138,11 @@ export async function processChatOnly(
   const documentContext = buildSmartDocumentContext(paragraphs, message, 5);
 
   try {
-    const response = await fetch(`${backendUrl}/edit/chat`, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model: "stepfun/step-3.5-flash:free",
+    const response = await fetchWithFallback(
+      backendUrl,
+      token,
+      (model) => ({
+        model,
         max_tokens: 512,
         temperature: 0.7,
         messages: [
@@ -79,24 +153,23 @@ export async function processChatOnly(
           },
         ],
       }),
-    });
-
-    if (!response.ok) throw new Error("API Connection failed.");
+    );
 
     const data = await response.json();
     return (
-      data.choices?.[0]?.message?.content?.trim() || "No response received from the AI service."
+      data.choices?.[0]?.message?.content?.trim() ||
+      "No response received from the AI service."
     );
   } catch (error) {
     console.error("Chat API Error:", error);
-    return "The AI service encountered an error. Please try again.";
+    return "The AI service is currently busy across all providers. Please try again in a moment.";
   }
 }
 
 export async function processCommandWithAI(
   command: string,
   paragraphs: string[],
-  retries = 2,
+  retries = 1,
 ): Promise<CommandResult> {
   const backendUrl =
     import.meta.env.VITE_BACKEND_URL || "http://localhost:8000";
@@ -139,16 +212,13 @@ export async function processCommandWithAI(
         command,
       );
 
-      const response = await fetch(`${backendUrl}/edit/chat`, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "stepfun/step-3.5-flash:free",
-          max_tokens: 1024, // hard cap — free tier protection
-          temperature: 0.2, // lower = more deterministic, fewer wasted tokens
+      const response = await fetchWithFallback(
+        backendUrl,
+        token,
+        (model) => ({
+          model,
+          max_tokens: 1024,
+          temperature: 0.2,
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             {
@@ -157,28 +227,7 @@ export async function processCommandWithAI(
             },
           ],
         }),
-      });
-
-      // 429 = rate limited
-      if (response.status === 429) {
-        const waitTime = (attempt + 1) * 3000;
-        console.warn(`Rate limited. Retrying in ${waitTime / 1000}s...`);
-        if (attempt < retries) {
-          await delay(waitTime);
-          continue;
-        }
-        return {
-          success: false,
-          message:
-            "The service is busy. Please try again in a moment.",
-          updatedParagraphs: paragraphs,
-        };
-      }
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error?.message || "API Connection failed.");
-      }
+      );
 
       const data = await response.json();
       const aiContent = data.choices?.[0]?.message?.content || "{}";
@@ -208,7 +257,7 @@ export async function processCommandWithAI(
         console.error("AI Direct API Error:", error);
         return {
           success: false,
-          message: `Connection unstable: ${error instanceof Error ? error.message : "Service error"}`,
+          message: "All AI providers are currently busy. Please try again in a moment.",
           updatedParagraphs: paragraphs,
         };
       }

@@ -28,8 +28,8 @@ interface SpeechRecognition extends EventTarget {
   lang: string;
   start(): void;
   stop(): void;
-  onresult: ((this: SpeechRecognition, ev: SpeechRecognitionEvent) => any) | null;
-  onerror: ((this: SpeechRecognition, ev: SpeechRecognitionErrorEvent) => any) | null;
+  onresult: ((this: SpeechRecognition, ev: SpeechRecognitionEvent) => void) | null;
+  onerror: ((this: SpeechRecognition, ev: SpeechRecognitionErrorEvent) => void) | null;
 }
 
 interface WindowWithSpeech extends Window {
@@ -153,9 +153,9 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
       // insertContent automatically replaces the current selection
       editor.commands.insertContent(newHtml);
       toast.success("Edit applied successfully!");
-    } catch (error: any) {
+    } catch (error) {
       console.error("Selection Edit Error", error);
-      toast.error(error.message || "Failed to apply AI edit.");
+      toast.error(error instanceof Error ? error.message : "Failed to apply AI edit.");
     } finally {
       setIsProcessing(false);
       setTranscript("");

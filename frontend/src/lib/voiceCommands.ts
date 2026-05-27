@@ -320,7 +320,7 @@ const commands: CommandPattern[] = [
 
   {
     pattern:
-      /^(?:read|speak|narrate)(?:\s+the)?\s+(?:selected\s+)?(?:line|paragraph)(?:\s+(\d+))?$/i,
+      /^(?:read|speak|narrate)(?:\s+the)?\s+(?:selected\s+)?(?:text|line|paragraph|sentence)(?:\s+(\d+))?$/i,
     description: "Read text aloud",
     example: "read paragraph 1",
     handler: (paragraphs, match, selectedParagraphIndex) => {

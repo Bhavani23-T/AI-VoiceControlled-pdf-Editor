@@ -1,7 +1,12 @@
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import { Bold, Italic, Strikethrough, Heading1, Heading2, List, ListOrdered, Quote, Undo, Redo } from 'lucide-react';
-
+import { Image } from '@tiptap/extension-image';
+import { Table } from '@tiptap/extension-table';
+import { TableRow } from '@tiptap/extension-table-row';
+import { TableHeader } from '@tiptap/extension-table-header';
+import { TableCell } from '@tiptap/extension-table-cell';
+import { TextAlign } from '@tiptap/extension-text-align';
 interface RichTextEditorProps {
   content: string;
   onChange: (content: string) => void;
@@ -110,6 +115,35 @@ export default function RichTextEditor({ content, onChange, isLoading }: RichTex
         heading: {
           levels: [1, 2, 3],
         },
+      }),
+      Image.configure({
+        HTMLAttributes: {
+          class: 'rounded-md shadow-md max-w-full my-4',
+        },
+      }),
+      Table.configure({
+        resizable: true,
+        HTMLAttributes: {
+          class: 'border-collapse table-auto w-full my-4 border border-primary/30',
+        },
+      }),
+      TableRow.configure({
+        HTMLAttributes: {
+          class: 'border-b border-primary/20 hover:bg-primary/5 transition-colors',
+        },
+      }),
+      TableHeader.configure({
+        HTMLAttributes: {
+          class: 'border border-primary/30 px-4 py-2 font-bold bg-primary/10 text-primary',
+        },
+      }),
+      TableCell.configure({
+        HTMLAttributes: {
+          class: 'border border-primary/20 px-4 py-2',
+        },
+      }),
+      TextAlign.configure({
+        types: ['heading', 'paragraph'],
       }),
     ],
     content,

@@ -28,8 +28,10 @@ interface SpeechRecognition extends EventTarget {
   lang: string;
   start(): void;
   stop(): void;
+  abort(): void;
   onresult: ((this: SpeechRecognition, ev: SpeechRecognitionEvent) => void) | null;
   onerror: ((this: SpeechRecognition, ev: SpeechRecognitionErrorEvent) => void) | null;
+  onend: ((this: SpeechRecognition, ev: Event) => void) | null;
 }
 
 interface WindowWithSpeech extends Window {
@@ -70,7 +72,14 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
         };
 
         recognition.onerror = (e: SpeechRecognitionErrorEvent) => {
-          console.error("Speech recognition error", e.error);
+          if (e.error !== "aborted") {
+            console.error("Speech recognition error", e.error);
+          }
+          setIsRecording(false);
+        };
+
+        recognition.onend = () => {
+          // If the mic naturally turns off (e.g. due to silence), update the UI state
           setIsRecording(false);
         };
 
@@ -80,7 +89,7 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
 
     return () => {
       if (recognitionRef.current) {
-        recognitionRef.current.stop();
+        recognitionRef.current.abort();
       }
     };
   }, []);
@@ -93,7 +102,7 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
     return div.innerHTML;
   };
 
-  const startRecording = (e: React.MouseEvent) => {
+  const startRecording = (e: React.SyntheticEvent) => {
     e.preventDefault(); // Keep editor focus and selection
     if (!recognitionRef.current) {
       toast.error("Speech recognition is not supported in this browser.");
@@ -107,15 +116,24 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
     });
 
     setTranscript("");
-    setIsRecording(true);
+    
+    // Abort any stale background sessions first
     try {
-      recognitionRef.current.start();
-    } catch (e) {
-      console.warn("Recognition already started", e);
-    }
+      recognitionRef.current.abort();
+    } catch (err) {}
+
+    // Small delay ensures the browser completely clears the audio pipeline
+    setTimeout(() => {
+      try {
+        recognitionRef.current?.start();
+        setIsRecording(true);
+      } catch (err) {
+        console.warn("Recognition start failed", err);
+      }
+    }, 80);
   };
 
-  const stopRecording = async (e: React.MouseEvent) => {
+  const stopRecording = async (e: React.SyntheticEvent) => {
     e.preventDefault();
     if (!isRecording) return;
 
@@ -169,6 +187,12 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
     <BubbleMenu
       editor={editor}
       updateDelay={100}
+      shouldShow={({ state }) => {
+        // Keep the menu open if we're actively recording or processing, even if selection is lost
+        if (isRecording || isProcessing) return true;
+        // Otherwise, show only when text is selected
+        return !state.selection.empty;
+      }}
       options={{ placement: "top" }}
       className="flex items-center gap-1 overflow-hidden rounded-lg border border-primary/30 bg-background/95 p-1 shadow-2xl backdrop-blur-xl"
     >
@@ -181,6 +205,7 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
         <div className="flex items-center gap-2 px-2 py-1">
           <button
             onMouseDown={stopRecording}
+            onTouchStart={stopRecording}
             className="flex h-8 w-8 items-center justify-center rounded-full bg-red-500/20 text-red-500 transition-colors hover:bg-red-500/30"
           >
             <StopCircle className="h-4 w-4 animate-pulse" />
@@ -193,6 +218,7 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
         <>
           <button
             onMouseDown={startRecording}
+            onTouchStart={startRecording}
             className="flex items-center gap-2 rounded px-3 py-1.5 text-xs font-medium text-primary/80 transition-colors hover:bg-accent/20 hover:text-accent"
           >
             <Mic className="h-4 w-4" />

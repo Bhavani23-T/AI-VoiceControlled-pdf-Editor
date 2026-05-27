@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
-
+import { toast } from "@/hooks/use-toast";
 interface UseSpeechRecognitionResult {
   isListening: boolean;
   transcript: string;
@@ -68,6 +68,45 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
   // while the UI still shows the mic as "active", making voice undetectable.
   const shouldBeListeningRef = useRef(false);
   const restartTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearSilenceTimeout = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  }, []);
+
+  const handleSilenceTimeout = useCallback(() => {
+    if (!shouldBeListeningRef.current) return;
+    
+    // Stop listening due to inactivity
+    shouldBeListeningRef.current = false;
+    setIsListening(false);
+    
+    if (restartTimerRef.current) {
+      clearTimeout(restartTimerRef.current);
+      restartTimerRef.current = null;
+    }
+    
+    try {
+      recognitionRef.current?.stop();
+    } catch (e) {
+      console.error("Failed to stop recognition on silence timeout:", e);
+    }
+
+    toast({
+      title: "Microphone Inactive",
+      description: "Microphone turned off due to inactivity",
+    });
+  }, []);
+
+  const resetSilenceTimeout = useCallback(() => {
+    clearSilenceTimeout();
+    if (shouldBeListeningRef.current) {
+      silenceTimerRef.current = setTimeout(handleSilenceTimeout, 5000);
+    }
+  }, [clearSilenceTimeout, handleSilenceTimeout]);
 
   const isSupported =
     typeof window !== "undefined" &&
@@ -111,6 +150,9 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
         setTranscript(final.trim());
       }
       setInterimTranscript(interim);
+      
+      // Reset silence timeout whenever we get speech results
+      resetSilenceTimeout();
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
@@ -155,15 +197,17 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
     return () => {
       shouldBeListeningRef.current = false;
       if (restartTimerRef.current) clearTimeout(restartTimerRef.current);
+      if (silenceTimerRef.current) clearTimeout(silenceTimerRef.current);
       recognition.abort();
     };
-  }, [isSupported]);
+  }, [isSupported, resetSilenceTimeout]);
 
   const startListening = useCallback(() => {
     if (!recognitionRef.current) return;
 
     // Mark intention BEFORE starting so onend can restart if needed
     shouldBeListeningRef.current = true;
+    resetSilenceTimeout();
 
     try {
       // Abort any existing session to clear stale buffers
@@ -195,6 +239,7 @@ const useSpeechRecognition = (): UseSpeechRecognitionResult => {
 
     // Clear intention FIRST so onend does NOT auto-restart
     shouldBeListeningRef.current = false;
+    clearSilenceTimeout();
     if (restartTimerRef.current) {
       clearTimeout(restartTimerRef.current);
       restartTimerRef.current = null;

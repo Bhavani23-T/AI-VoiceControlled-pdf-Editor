@@ -1,7 +1,7 @@
 import { Editor } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import { Mic, Pencil, Loader2, StopCircle } from "lucide-react";
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { DOMSerializer } from "prosemirror-model";
 import { processSelectionEditWithAI } from "../lib/aiService";
 import { toast } from "sonner";
@@ -44,12 +44,40 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
   const [isProcessing, setIsProcessing] = useState(false);
   const [transcript, setTranscript] = useState("");
   const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isRecordingRef = useRef<boolean>(false);
+
+  // Sync ref with state so we can access it in the timeout callback reliably
+  useEffect(() => {
+    isRecordingRef.current = isRecording;
+  }, [isRecording]);
 
   // Preserve the selection range so we don't lose it if editor blurs
   const [selectionRange, setSelectionRange] = useState<{
     from: number;
     to: number;
   } | null>(null);
+
+  const clearSilenceTimeout = useCallback(() => {
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+  }, []);
+
+  const resetSilenceTimeout = useCallback(() => {
+    clearSilenceTimeout();
+    silenceTimerRef.current = setTimeout(() => {
+      if (!isRecordingRef.current) return;
+      
+      setIsRecording(false);
+      try {
+        recognitionRef.current?.stop();
+      } catch (err) {}
+      
+      toast.info("Microphone turned off due to inactivity");
+    }, 5000);
+  }, [clearSilenceTimeout]);
 
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -69,6 +97,9 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
             currentTranscript += event.results[i][0].transcript;
           }
           setTranscript(currentTranscript);
+          
+          // Reset silence timeout whenever we get speech results
+          resetSilenceTimeout();
         };
 
         recognition.onerror = (e: SpeechRecognitionErrorEvent) => {
@@ -80,7 +111,9 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
 
         recognition.onend = () => {
           // If the mic naturally turns off (e.g. due to silence), update the UI state
-          setIsRecording(false);
+          if (isRecordingRef.current) {
+            setIsRecording(false);
+          }
         };
 
         recognitionRef.current = recognition;
@@ -88,11 +121,12 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
     }
 
     return () => {
+      clearSilenceTimeout();
       if (recognitionRef.current) {
         recognitionRef.current.abort();
       }
     };
-  }, []);
+  }, [clearSilenceTimeout, resetSilenceTimeout]);
 
   const getSelectedHtml = () => {
     const slice = editor.state.selection.content();
@@ -127,6 +161,7 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
       try {
         recognitionRef.current?.start();
         setIsRecording(true);
+        resetSilenceTimeout();
       } catch (err) {
         console.warn("Recognition start failed", err);
       }
@@ -137,6 +172,7 @@ export default function VoiceSelectionMenu({ editor }: { editor: Editor }) {
     e.preventDefault();
     if (!isRecording) return;
 
+    clearSilenceTimeout();
     recognitionRef.current?.stop();
     setIsRecording(false);
 
